@@ -1,0 +1,5 @@
+# The installer is distributed as a GitHub Release asset, not tracked in git
+# (a ~281 MB DMG is well over GitHub's 100 MB per-file limit).
+*.dmg
+dist/
+.DS_Store
