@@ -1,0 +1,736 @@
+"""
+Configuration management for AllSky Overlay App
+"""
+import copy
+import json
+import os
+import threading
+from .utils_paths import resource_path, get_exe_dir, get_app_data_dir, default_asi_sdk_path, asi_sdk_filename
+from .app_config import APP_DATA_FOLDER, DEFAULT_OUTPUT_SUBFOLDER
+
+DEFAULT_CAMERA_PROFILE = {
+    "exposure_ms": 100.0,
+    "gain": 100,
+    "max_exposure_ms": 30000.0,
+    "target_brightness": 100,
+    "wb_r": 75,
+    "wb_b": 99,
+    "offset": 20,
+    "flip": 0,
+    "bayer_pattern": "BGGR",
+}
+
+DEFAULT_CONFIG = {
+    # UI appearance
+    "ui_accent": "iris",   # accent theme: iris | nebula | aurora | solar | nova | forest
+    "ui_log_level": "Info+",
+
+    # Window settings
+    "window_geometry": "1280x1700",
+    "splitter_sizes": [400, 500],  # Live panel and inspector panel widths
+    "inspector_visible": True,  # Whether inspector panel is visible
+    
+    # Mode selection
+    "capture_mode": "camera",  # "watch" or "camera"
+    
+    # Directory watch settings
+    "watch_directory": "",
+    "watch_recursive": True,
+    
+    # Output settings
+    "output_directory": os.path.join(get_app_data_dir(), DEFAULT_OUTPUT_SUBFOLDER),
+    "filename_pattern": "latestImage",
+    "output_format": "jpg",
+    "jpg_quality": 100,
+    "resize_percent": 74,
+    "timestamp_corner": False,
+    
+    # Output mode settings
+    "output": {
+        "mode": "file",  # "file" | "webserver"
+
+        # Webserver settings
+        "webserver_enabled": False,
+        "webserver_host": "127.0.0.1",
+        "webserver_port": 8080,
+        "webserver_path": "/latest",
+        "webserver_status_path": "/status",
+        "webserver_docs_path": "/docs",
+        "webserver_library_path": "/library"
+    },
+    
+    # ZWO Camera settings
+    "zwo_sdk_path": default_asi_sdk_path(),
+    "zwo_camera_index": 0,
+    "zwo_camera_name": "",  # Last selected camera name
+    "zwo_selected_camera": 0,  # Last selected camera index (transient — shifts on hot-plug)
+    # Stable hardware serial (ASIGetSerialNumber, 16-hex). The authoritative
+    # identity: index and model name are non-unique/unstable. Learned on the
+    # first clean connect for configs that predate this key.
+    "zwo_selected_camera_serial": "",
+    
+    # Per-camera profiles (NEW: stores settings per camera to prevent cross-contamination)
+    # NOTE: auto_exposure is NOT stored here - it's a global algorithm setting, not camera-specific
+    # NOTE: auto_wb/WB mode is NOT stored here - stored in global white_balance config
+    "camera_profiles": {
+        # "ZWO ASI676MC": {  # Example camera profile
+        #     "exposure_ms": 100.0,
+        #     "gain": 100,
+        #     "max_exposure_ms": 30000.0,
+        #     "target_brightness": 100,
+        #     "wb_r": 75,  # Manual WB red channel (when mode=manual)
+        #     "wb_b": 99,  # Manual WB blue channel (when mode=manual)
+        #     "offset": 20,
+        #     "flip": 0,
+        #     "bayer_pattern": "BGGR"
+        # }
+    },
+    
+    # Global camera settings (NOT per-camera — apply to the whole capture loop)
+    "zwo_interval": 300.0,        # seconds between captures
+    "zwo_auto_exposure": True,    # auto-exposure algorithm enabled (global toggle)
+    
+    # Scheduled capture settings
+    # mode:
+    #   "always"   — capture 24/7 using zwo_interval (default)
+    #   "gated"    — only capture inside the time window; disconnect camera outside
+    #   "variable" — always capture, but use scheduled_window_interval inside the
+    #                window and zwo_interval outside (e.g. fast at night, slow by day)
+    "scheduled_capture_mode": "variable",
+    "scheduled_capture_enabled": True,      # legacy flag — kept in sync with mode for back-compat
+    "scheduled_start_time": "16:00",        # 4:00 PM — window start (24hr)
+    "scheduled_end_time": "09:00",          # 9:00 AM — window end (next day for overnight)
+    "scheduled_window_interval": 30.0,      # seconds between captures when inside the window (variable mode only)
+    
+    # White Balance configuration
+    "white_balance": {
+        "mode": "gray_world",  # "asi_auto" | "manual" | "gray_world"
+        "manual_red_gain": 1.0,
+        "manual_blue_gain": 1.0,
+        "gray_world_low_pct": 5,
+        "gray_world_high_pct": 100
+    },
+    
+    # Analytics (PostHog)
+    "analytics_enabled": True,  # Send anonymous usage data (opt-out via Settings > System)
+
+    # Startup behaviour (Windows scheduled task — see services/autostart.py)
+    "run_on_startup": False,      # UI reflection; the scheduled task is the source of truth
+    "autostart_capture": True,    # Include --auto-start in the registered startup command
+
+    "auto_brightness": False,  # Automatically adjust brightness
+    "brightness_factor": 1.0,  # Brightness multiplier (0.5 to 2.0, 1.0 = neutral)
+    "saturation_factor": 0.98,  # Saturation multiplier (0.0 to 2.0, 1.0 = neutral)
+    
+    # Auto Stretch settings (MTF - Midtone Transfer Function)
+    "auto_stretch": {
+        "enabled": True,
+        "target_median": 0.15,  # Target median value (0.0-1.0, default 0.25 = quarter brightness)
+        "linked_stretch": False,  # Apply same stretch to all RGB channels (False = per-channel MAD clipping)
+        "preserve_blacks": True,  # Keep true blacks dark instead of lifting to grey
+        "black_point": 0.0,  # Manual black point (0.0-0.1) - pixels below this stay black
+        "shadow_aggressiveness": 1.8,  # MAD multiplier for shadow clipping (1.5=aggressive, 2.8=standard, 4.0=gentle)
+        "saturation_boost": 1.5,  # Post-stretch saturation boost (1.0=none, 1.5=moderate, 2.0=strong)
+        "normalize_channels": True,  # Equalize R/G/B medians before stretch (fixes color cast in dark scenes)
+        "dark_scene_threshold": 0.12,  # Median below this triggers dark scene mode (0.0-0.2)
+        "scnr_amount": 0.46  # Subtractive chromatic noise reduction strength (0.0=off, 1.0=max green removal)
+    },
+
+    # Star sharpening — cosmetic unsharp mask applied before overlay rendering
+    "sharpening": {
+        "enabled": True,   # Disabled by default; user opts in
+        "radius": 1.5,      # Gaussian blur radius in pixels (keep <= 2 for stars)
+        "amount": 80,       # Strength on Pillow 0-500 scale (80 = subtle)
+        "threshold": 3,     # Min pixel diff to sharpen; suppresses noise in dark sky
+    },
+
+    # ML Models (Beta) - Observatory condition classification
+    # These models analyze images to detect roof state and sky conditions
+    "ml_models": {
+        "enabled": False,  # Enable ML-based image analysis (Beta)
+        "roof_classifier": True,  # Predict roof open/closed state
+        "sky_classifier": True,   # Predict sky condition (Clear/Cloudy/etc) when roof is open
+        "show_in_preview": True,  # Display predictions in live monitoring metadata
+        # ASCOM Safety Monitor file output (for NINA integration)
+        "ascom_safety_file": {
+            "enabled": False,  # Write roof status to file for NINA GenericFile safety monitor
+            "file_path": os.path.join(get_app_data_dir(), 'RoofStatusFile.txt'),  # Default to AppData
+            "preamble": "Roof Status:",  # Text before the status value
+            "open_trigger": "OPEN",  # Value when roof is open (Safe in NINA)
+            "closed_trigger": "CLOSED",  # Value when roof is closed (Unsafe in NINA)
+            "include_confidence": True,  # Include confidence % in file
+            "include_sky_condition": True,  # Include sky condition on separate line
+            "min_confidence": 0.7,  # Only write if confidence >= this threshold
+        },
+    },
+    
+    # Developer Mode settings - for troubleshooting raw image data
+    "dev_mode": {
+        "enabled": False,  # Save raw images before any processing
+        "raw_folder": "raw_debug",  # Subfolder name for raw images (relative to output_directory)
+        "save_histogram_stats": True,  # Log detailed per-channel statistics
+        "use_raw16": False,  # Use RAW16 mode for full bit depth (requires camera support)
+        "ml_predictions": {
+            "enabled": True,  # Run ML model predictions on each capture (for dev JSON)
+            "roof_classifier": True,  # Predict roof open/closed state
+            "sky_classifier": True,   # Predict sky condition (only when roof open)
+        }
+    },
+    
+    # Overlay settings
+    "overlays": [
+        {
+            "text": "Camera: {CAMERA}\nExposure: {EXPOSURE}\nGain: {GAIN}\nTemp: {TEMP}",
+            "anchor": "Bottom-Left",
+            "offset_x": 10,
+            "offset_y": 10,
+            "font_size": 24,
+            "font_style": "normal",
+            "color": "white"
+        }
+    ],
+    
+    # Cleanup settings
+    "cleanup_enabled": False,
+    "cleanup_max_size_gb": 10.0,
+    "cleanup_strategy": "oldest",
+
+    # Image library — rolling store of downscaled (Discord-size) frames,
+    # retained by age AND size, browsable in-app and over the web API.
+    "library": {
+        "enabled": True,
+        "retention_days": 7,
+        "max_size_gb": 2.0,
+        "max_dimension": 750,   # longest-edge px; matches the Discord image size
+        "jpeg_quality": 85,
+        "api_enabled": True,    # expose the /library web endpoints
+        "prune_interval_minutes": 15,
+    },
+
+    # Weather settings (OpenWeatherMap)
+    "weather": {
+        "enabled": False,  # Set to True when API key and location configured
+        "api_key": "",
+        "location": "",  # City name fallback, e.g., "London" or "London,GB"
+        "latitude": "",  # Preferred: direct coordinates (e.g., "51.5074")
+        "longitude": "",  # Preferred: direct coordinates (e.g., "-0.1278")
+        "units": "metric",  # "metric", "imperial", or "standard"
+        "cache_duration": 600,  # Cache weather data for 10 minutes
+        "elevation": "",       # Observer elevation in metres (for refraction)
+    },
+    
+    # Discord alerts
+    "discord": {
+        "enabled": False,
+        "webhook_url": "",
+        "embed_color_hex": "#0EA5E9",
+        "post_errors": False,
+        "post_startup_shutdown": False,
+        "periodic_enabled": False,
+        "periodic_interval_minutes": 60,
+        "include_latest_image": True,
+        "username_override": "",
+        "avatar_url": "",
+        "post_timelapse": False,      # Post timelapse video when session completes
+        "post_calibration": False,    # Post notification when all-sky calibration completes
+        "post_roof_changes": False,   # Post notification when ML confirms a roof status change
+    },
+
+    # Hermes webhook — HMAC-signed JSON notifications for an LLM agent to compose/deliver
+    "hermes": {
+        "enabled": False,
+        "url": "",
+        "secret": "",
+        "post_errors": False,
+        "post_startup_shutdown": False,
+        "post_roof_changes": False,
+        "post_timelapse": False,
+        "post_calibration": False,
+        "periodic_enabled": False,
+        # Optional per-event URL routing: when route_by_event is True, each event
+        # type posts to its own URL below (blank falls back to the base 'url'),
+        # so Hermes can run focused per-event subscriptions. Same secret for all.
+        "route_by_event": False,
+        "event_urls": {
+            "error": "",
+            "roof_changed": "",
+            "periodic_image": "",
+            "lifecycle": "",
+            "timelapse_done": "",
+            "calibration_done": "",
+        },
+    },
+
+    # YouTube timelapse uploads
+    "youtube": {
+        "enabled": False,
+        "client_secrets_path": "",
+        "privacy_status": "private",  # "private" | "unlisted" | "public"
+        "title_template": "PFR Sentinel Timelapse {date}",
+        "description_template": "All-sky timelapse recorded by PFR Sentinel.",
+        "tags": "astronomy, allsky, timelapse",
+        "category_id": "22",
+    },
+    
+    # All-sky camera settings (for ML training visual reference)
+    "allsky": {
+        "enabled": True,
+        "url": "https://zyssufjepmbhqznfuwcw.supabase.co/storage/v1/object/public/status-assets-public/building-0009/allsky/images/image.jpg",
+        "timeout_seconds": 10
+    },
+    
+    # ML Data Contribution - helps improve models for all users
+    # Opt-in anonymous data sharing with downscaled images (256x256)
+    "ml_contribution": {
+        "enabled": False,  # Opt-in data sharing
+        "min_interval_minutes": 30,  # Don't collect more often than this
+        "max_samples": 500,  # Auto-pause when reached (~50MB)
+    },
+
+    # Timelapse - daily video recording from camera capture mode
+    "timelapse": {
+        "enabled": False,
+        "window_mode": "sun",          # "sun" | "fixed" | "always"
+        "sun_mode": "astronomical",    # "astronomical" | "nautical" | "civil" | "sunset_sunrise"
+        # Sun-window location is sourced live from weather.latitude/longitude by
+        # timelapse_controller — there is no separate timelapse coordinate UI.
+        "fixed_start": "18:00",        # HH:MM local time (used when window_mode="fixed")
+        "fixed_end": "06:00",          # HH:MM local time (crossing midnight is supported)
+        "playback_fps": 24,            # Output video playback frame rate
+        "video_crf": 23,               # H.264 CRF quality (0-51, lower=better, 23=default)
+        "video_preset": "fast",        # ffmpeg preset (ultrafast/fast/medium/slow)
+        "include_overlays": False,     # False = clean frame, True = frame with overlays
+        "output_dir": "",              # "" = AppData/PFRSentinel/timelapse/
+        "max_videos_to_keep": 30,      # Auto-delete oldest beyond this many days
+    },
+
+    # Meteor Tracker — temporal-stack trail detection (see docs/METEOR_DETECTION_PLAN.md)
+    "meteor": {
+        "enabled": False,
+        "min_length": 100,              # Minimum trail length in pixels (full-res)
+        "detection_cooldown": 30,       # Seconds between detection events (0 = disabled)
+        "save_detections": True,        # Append events to a JSONL log
+        "log_file": "",                 # "" = %LOCALAPPDATA%\PFRSentinel\meteor_detections.jsonl
+        "save_annotated": False,        # Save annotated full-frame copies with detections
+        "annotated_dir": "",            # "" = disabled
+        "exclusion_zones": [],          # [{x,y,w,h,note}] — user-rejected regions
+        # --- Temporal stack detector (Phase 2+) ---
+        "stack_frames": 6,              # FrameStack ring-buffer depth
+        "detection_long_side": 1280,    # Detection working resolution (long side, px)
+        "noise_sensitivity": "normal",  # low | normal | high → diff-noise threshold mapping
+        "min_brightness": 10,           # Min mean transient value along trail (0 = off)
+        "max_nonline_prob": 0.30,       # Reject blobs fatter than this width/length ratio
+        "max_length_frac": 0.5,         # Reject streaks longer than this fraction of frame width
+        "track_suppress_minutes": 10,   # Plane-trajectory suppression TTL
+        # --- Deprecated (pre-rework, read-but-ignored; remove in Phase 6) ---
+        "diff_threshold": 25,
+        "adaptive_threshold": True,
+    },
+
+    # All-sky overlay — astronomical annotations on each frame
+    "allsky_overlay": {
+        "enabled": False,
+        "calibration_file": "",
+        "constellations": {
+            "enabled": True, "lines": True, "labels": True,
+            "color": "#4488FF", "line_width": 1, "label_size": 12, "opacity": 180,
+        },
+        "messier": {
+            "enabled": True, "color": "#FF8844",
+            "marker_size": 8, "label_size": 10, "opacity": 200,
+        },
+        "ngc": {
+            "enabled": False, "min_magnitude": 8.0, "color": "#88FF44",
+            "marker_size": 6, "label_size": 9, "opacity": 150,
+        },
+        "planets": {
+            "enabled": True, "label_size": 14, "marker_size": 10, "opacity": 255,
+            "colors": {
+                "Mercury": "#B0B0B0", "Venus": "#FFFFCC", "Mars": "#FF6644",
+                "Jupiter": "#FFCC88", "Saturn": "#FFDDAA",
+                "Uranus": "#88DDFF", "Neptune": "#4466FF", "Moon": "#FFFFEE",
+            },
+        },
+        "grid": {
+            "enabled": True, "horizon": True, "altitude_rings": True,
+            "altitude_step": 30, "azimuth_lines": True, "cardinal_labels": True,
+            "color": "#336633", "line_width": 1, "label_size": 14, "opacity": 120,
+        },
+    },
+}
+
+class Config:
+    # Class-level flag to track if cleanup has been attempted this session
+    _cleanup_attempted = False
+
+    def __init__(self, config_path=None):
+        self._lock = threading.RLock()
+        # Store config in user data directory for persistence across upgrades
+        if config_path is None:
+            user_data_dir = get_app_data_dir()
+            os.makedirs(user_data_dir, exist_ok=True)
+            config_path = os.path.join(user_data_dir, 'config.json')
+            
+            # One-time migration from old ASIOverlayWatchDog location
+            old_base = os.getenv('LOCALAPPDATA')
+            old_appdata_dir = os.path.join(old_base, 'ASIOverlayWatchDog') if old_base else ''
+            if os.path.exists(old_appdata_dir) and not os.path.exists(config_path):
+                self._migrate_from_old_location(old_appdata_dir, user_data_dir, config_path)
+            
+            # Migrate old config.json from app directory if it exists (legacy)
+            old_config_path = 'config.json'
+            if not os.path.exists(config_path) and os.path.exists(old_config_path):
+                try:
+                    import shutil
+                    shutil.copy2(old_config_path, config_path)
+                    from services.logger import app_logger
+                    app_logger.info(f"Migrated config from {old_config_path} to {config_path}")
+                except Exception as e:
+                    from services.logger import app_logger
+                    app_logger.warning(f"Could not migrate old config: {e}")
+        
+        self.config_path = config_path
+        self.data = self.load()
+        
+        # Migrate any paths that still reference old ASIOverlayWatchDog
+        self._migrate_old_paths()
+        
+        # Always attempt to clean up old ASIOverlayWatchDog directory if it exists
+        self._cleanup_old_directory()
+    
+    def _migrate_from_old_location(self, old_dir, new_dir, new_config_path):
+        """Migrate config and data from old ASIOverlayWatchDog location to new PFR\\Sentinel location"""
+        import shutil
+        
+        from services.logger import app_logger
+        app_logger.info(f"Migrating data from {old_dir} to {new_dir}...")
+
+        try:
+            # Migrate config.json
+            old_config = os.path.join(old_dir, 'config.json')
+            if os.path.exists(old_config):
+                shutil.copy2(old_config, new_config_path)
+                app_logger.info("Migrated config.json")
+
+            # Migrate overlay_images folder if it exists
+            old_overlay_images = os.path.join(old_dir, 'overlay_images')
+            new_overlay_images = os.path.join(new_dir, 'overlay_images')
+            if os.path.exists(old_overlay_images) and not os.path.exists(new_overlay_images):
+                shutil.copytree(old_overlay_images, new_overlay_images)
+                app_logger.info("Migrated overlay_images/")
+
+            # Migrate weather_icons folder if it exists
+            old_weather_icons = os.path.join(old_dir, 'weather_icons')
+            new_weather_icons = os.path.join(new_dir, 'weather_icons')
+            if os.path.exists(old_weather_icons) and not os.path.exists(new_weather_icons):
+                shutil.copytree(old_weather_icons, new_weather_icons)
+                app_logger.info("Migrated weather_icons/")
+            
+            # Don't migrate Images/ folder (can be large) or Logs/ (not critical)
+            # User can manually copy if needed
+            
+            # Update SDK path in migrated config if it points to old location
+            if os.path.exists(new_config_path):
+                try:
+                    with open(new_config_path, 'r') as f:
+                        import json
+                        migrated_config = json.load(f)
+                    
+                    sdk_path = migrated_config.get('sdk_path', '')
+                    if 'ASIOverlayWatchDog' in sdk_path:
+                        # Update to new PFRSentinel path
+                        new_sdk_path = sdk_path.replace('ASIOverlayWatchDog', 'PFRSentinel')
+                        migrated_config['sdk_path'] = new_sdk_path
+                        
+                        with open(new_config_path, 'w') as f:
+                            json.dump(migrated_config, f, indent=4)
+                        app_logger.info(f"Updated SDK path: {sdk_path} -> {new_sdk_path}")
+                except Exception as e:
+                    app_logger.warning(f"Could not update SDK path: {e}")
+
+            # Remove old directory after successful migration
+            try:
+                shutil.rmtree(old_dir)
+                app_logger.info(f"Removed old directory: {old_dir}")
+            except Exception as e:
+                app_logger.warning(f"Could not remove old directory (may be in use): {e}")
+
+            app_logger.info(f"Migration complete! New location: {new_dir}")
+
+        except Exception as e:
+            app_logger.error(f"Migration failed: {e}. You may need to manually copy config.json from {old_dir} to {new_dir}")
+    
+    def _migrate_old_paths(self):
+        """Update any config paths that still reference old ASIOverlayWatchDog location"""
+        from services.logger import app_logger
+        import shutil
+        
+        paths_to_check = ['sdk_path', 'output_directory', 'watch_directory']
+        updated = False
+        
+        for key in paths_to_check:
+            value = self.data.get(key, '')
+            if value and 'ASIOverlayWatchDog' in value:
+                new_value = value.replace('ASIOverlayWatchDog', 'PFRSentinel')
+                
+                # For SDK path, also try to copy the DLL if it exists at old location but not new
+                if key == 'sdk_path' and os.path.isfile(value):
+                    new_dir = os.path.dirname(new_value)
+                    if not os.path.exists(new_value) and os.path.exists(new_dir):
+                        try:
+                            shutil.copy2(value, new_value)
+                            app_logger.info(f"Copied SDK DLL from {value} to {new_value}")
+                        except Exception as e:
+                            app_logger.warning(f"Could not copy SDK DLL: {e}")
+                
+                self.data[key] = new_value
+                app_logger.info(f"Migrated {key}: {value} -> {new_value}")
+                updated = True
+        
+        # Also check if sdk_path points to non-existent file - try to find it in new location
+        sdk_path = self.data.get('sdk_path', '')
+        if sdk_path and not os.path.isfile(sdk_path):
+            # Try to find SDK in the new PFRSentinel _internal folder
+            possible_locations = [
+                os.path.join(os.getenv('PROGRAMFILES(X86)', ''), 'PFRSentinel', '_internal', 'ASICamera2.dll'),
+                os.path.join(os.getenv('PROGRAMFILES', ''), 'PFRSentinel', '_internal', 'ASICamera2.dll'),
+                os.path.join(os.path.dirname(os.path.dirname(__file__)), '_internal', 'ASICamera2.dll'),
+            ]
+            for loc in possible_locations:
+                if os.path.isfile(loc):
+                    self.data['sdk_path'] = loc
+                    app_logger.info(f"SDK path was invalid, found SDK at: {loc}")
+                    updated = True
+                    break
+            else:
+                if sdk_path:
+                    app_logger.warning(f"SDK path is invalid and could not find SDK: {sdk_path}")
+        
+        if updated:
+            self.save()
+        
+        # Clean up old Program Files installation if it exists and is empty or only has _internal
+        self._cleanup_old_program_files()
+    
+    def _cleanup_old_program_files(self):
+        """Attempt to remove old ASIOverlayWatchDog from Program Files if it exists (once per session)"""
+        # Only attempt cleanup once per application session
+        if Config._cleanup_attempted:
+            return
+        Config._cleanup_attempted = True
+        
+        import shutil
+        from services.logger import app_logger
+        
+        # Check both Program Files locations
+        old_locations = [
+            os.path.join(os.getenv('PROGRAMFILES', ''), 'ASIOverlayWatchDog'),
+            os.path.join(os.getenv('PROGRAMFILES(X86)', ''), 'ASIOverlayWatchDog'),
+        ]
+        
+        for old_dir in old_locations:
+            if old_dir and os.path.exists(old_dir):
+                try:
+                    shutil.rmtree(old_dir)
+                    app_logger.info(f"Cleaned up old Program Files directory: {old_dir}")
+                except PermissionError:
+                    app_logger.warning(f"Could not remove old Program Files directory (may need admin rights): {old_dir}")
+                except Exception as e:
+                    app_logger.warning(f"Could not remove old Program Files directory {old_dir}: {e}")
+    
+    def _cleanup_old_directory(self):
+        """Attempt to remove old ASIOverlayWatchDog directory if it still exists"""
+        import shutil
+        from services.logger import app_logger
+        
+        old_base = os.getenv('LOCALAPPDATA')
+        old_dir = os.path.join(old_base, 'ASIOverlayWatchDog') if old_base else ''
+        if os.path.exists(old_dir):
+            try:
+                shutil.rmtree(old_dir)
+                app_logger.info(f"Cleaned up old directory: {old_dir}")
+            except PermissionError as e:
+                app_logger.warning(f"Could not remove old directory (files may be in use): {old_dir}")
+            except Exception as e:
+                app_logger.warning(f"Could not remove old directory {old_dir}: {e}")
+    
+    def load(self):
+        """Load configuration from JSON file or return defaults"""
+        with self._lock:
+            if os.path.exists(self.config_path):
+                try:
+                    with open(self.config_path, 'r') as f:
+                        loaded = json.load(f)
+
+                        # Migrate legacy per-camera zwo_* keys into camera_profiles[active].
+                        # Idempotent — safe no-op once the config is already clean.
+                        from .config_migrate import migrate_legacy_camera_keys
+                        loaded = migrate_legacy_camera_keys(loaded)
+
+                        # Drop profile keys that are pre-serial name-bug
+                        # artefacts ("Camera 0", "... (Index: 2)").
+                        from .camera_profiles import prune_bogus_profiles
+                        loaded = prune_bogus_profiles(loaded)
+
+                        # Merge with defaults to ensure new keys exist
+                        config = copy.deepcopy(DEFAULT_CONFIG)
+
+                        # Deep merge for nested configs like discord, white_balance
+                        for key, value in loaded.items():
+                            if isinstance(value, dict) and key in config and isinstance(config[key], dict):
+                                # Merge nested dict
+                                config[key].update(value)
+                            else:
+                                config[key] = value
+
+                        # Back-compat: derive scheduled_capture_mode from legacy
+                        # scheduled_capture_enabled if mode wasn't stored.
+                        if 'scheduled_capture_mode' not in loaded:
+                            config['scheduled_capture_mode'] = (
+                                'gated' if config.get('scheduled_capture_enabled') else 'always'
+                            )
+
+                        # Back-compat (W1): legacy configs enabled the web server
+                        # via output.mode == 'webserver'; the modern GUI uses
+                        # output.webserver_enabled. Carry the old flag forward so
+                        # the web server isn't silently dead on upgraded configs.
+                        loaded_output = loaded.get('output', {})
+                        if (isinstance(loaded_output, dict)
+                                and 'webserver_enabled' not in loaded_output
+                                and loaded_output.get('mode') == 'webserver'):
+                            config['output']['webserver_enabled'] = True
+
+                        return config
+                except Exception as e:
+                    try:
+                        from .logger import app_logger
+                        app_logger.error(f"Error loading config: {e}")
+                    except Exception:
+                        pass
+                    return copy.deepcopy(DEFAULT_CONFIG)
+            return copy.deepcopy(DEFAULT_CONFIG)
+    
+    def save(self):
+        """Save current configuration to JSON file"""
+        with self._lock:
+            try:
+                with open(self.config_path, 'w') as f:
+                    json.dump(self.data, f, indent=2)
+                return True
+            except Exception as e:
+                try:
+                    from .logger import app_logger
+                    app_logger.error(f"Error saving config: {e}")
+                except Exception:
+                    pass
+                return False
+    
+    def validate(self):
+        """Validate configuration and return a list of warnings.
+
+        Checks critical paths, port ranges, and required keys.
+        Returns a list of warning strings (empty list = all OK).
+        Does not block startup — warnings only.
+        """
+        warnings = []
+
+        # Check output directory exists and is writable
+        output_dir = self.data.get('output_directory', '')
+        if output_dir:
+            if not os.path.isdir(output_dir):
+                warnings.append(f"Output directory does not exist: {output_dir}")
+            elif not os.access(output_dir, os.W_OK):
+                warnings.append(f"Output directory is not writable: {output_dir}")
+
+        # Check watch directory if in watch mode
+        if self.data.get('capture_mode') == 'watch':
+            watch_dir = self.data.get('watch_directory', '')
+            if not watch_dir:
+                warnings.append("Watch mode selected but no watch directory configured")
+            elif not os.path.isdir(watch_dir):
+                warnings.append(f"Watch directory does not exist: {watch_dir}")
+
+        # Validate port ranges
+        output = self.data.get('output', {})
+        for port_key in ['webserver_port']:
+            port = output.get(port_key)
+            if port is not None and not (1 <= port <= 65535):
+                warnings.append(f"Invalid {port_key}: {port} (must be 1-65535)")
+
+        # Check required top-level keys exist
+        required_keys = ['capture_mode', 'output_directory', 'output', 'overlays']
+        for key in required_keys:
+            if key not in self.data:
+                warnings.append(f"Missing required config key: {key}")
+
+        # Check Discord webhook URL format if enabled
+        discord = self.data.get('discord', {})
+        if discord.get('enabled'):
+            url = discord.get('webhook_url', '')
+            if not url:
+                warnings.append("Discord enabled but webhook URL is empty")
+
+        # Check Hermes webhook config if enabled
+        hermes = self.data.get('hermes', {})
+        if hermes.get('enabled'):
+            if not hermes.get('url', ''):
+                warnings.append("Hermes enabled but webhook URL is empty")
+            if not hermes.get('secret', ''):
+                warnings.append("Hermes enabled but webhook secret is empty")
+
+        # Check YouTube upload config if enabled
+        youtube = self.data.get('youtube', {})
+        if youtube.get('enabled'):
+            try:
+                from .youtube_config import validate_youtube_config
+                warnings.extend(validate_youtube_config(youtube, require_client_file=True))
+            except Exception as e:
+                warnings.append(f"YouTube config validation failed: {e}")
+
+        return warnings
+
+    def get(self, key, default=None):
+        """Get configuration value"""
+        with self._lock:
+            return self.data.get(key, default)
+
+    def set(self, key, value):
+        """Set configuration value"""
+        with self._lock:
+            self.data[key] = value
+    
+    def get_overlays(self):
+        """Get overlay configurations"""
+        with self._lock:
+            return self.data.get("overlays", [])
+
+    def set_overlays(self, overlays):
+        """Set overlay configurations"""
+        with self._lock:
+            self.data["overlays"] = overlays
+    
+    def get_camera_profile(self, camera_name, serial=None):
+        """Get a camera's settings profile, keyed by hardware serial when known
+        (falls back to model name). See services/camera_profiles.py."""
+        from .camera_profiles import get_camera_profile
+        return get_camera_profile(self, camera_name, serial)
+
+    def save_camera_profile(self, camera_name, profile_data, serial=None):
+        """Persist a full profile dict for a camera (serial-keyed when known)."""
+        from .camera_profiles import save_camera_profile
+        save_camera_profile(self, camera_name, profile_data, serial)
+
+    def update_camera_profile(self, camera_name, serial=None, **kwargs):
+        """Update individual keys in a camera's profile (e.g. gain=150)."""
+        from .camera_profiles import update_camera_profile
+        update_camera_profile(self, camera_name, serial=serial, **kwargs)
+
+    def list_camera_profiles(self):
+        """All profile keys (serials and/or legacy names)."""
+        from .camera_profiles import list_camera_profiles
+        return list_camera_profiles(self)
+
+    def delete_camera_profile(self, camera_name, serial=None):
+        """Delete a camera profile by serial (preferred) or name key."""
+        from .camera_profiles import delete_camera_profile
+        delete_camera_profile(self, camera_name, serial)
