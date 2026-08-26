@@ -1,19 +1,67 @@
-> ### macOS fork
->
-> This is a private macOS (Apple Silicon) fork of
-> [**englishfox90/PFRSentinel**](https://github.com/englishfox90/PFRSentinel).
-> All credit for the application belongs to the original author,
-> [**englishfox90**](https://github.com/englishfox90); this fork adds the
-> macOS port and packaging. MIT licensed — see [LICENSE](LICENSE).
->
-> **[⬇ Download PFRSentinel-3.6.9-arm64.dmg](https://github.com/buddha2490/PFR-MAC/releases/download/v3.6.9/PFRSentinel-3.6.9-arm64.dmg)** (281 MB, macOS 12+, Apple Silicon)
->
-> Install steps, checksum, and how to compile the installer on another Mac:
-> **[docs/DOWNLOAD.md](docs/DOWNLOAD.md)**
-
-# PFR Sentinel
+# PFR Sentinel — macOS
 
 **Live Camera Monitoring & Overlay System for Observatories**
+
+Private macOS (Apple Silicon) fork of
+[**englishfox90/PFRSentinel**](https://github.com/englishfox90/PFRSentinel).
+All credit for the application belongs to its author, **Paul Fox-Reeks**
+([englishfox90](https://github.com/englishfox90)) — this fork adds only the
+macOS port and packaging. MIT licensed, Copyright (c) 2025 englishfox90.
+
+---
+
+# ⬇ Download
+
+## **[PFRSentinel-3.6.9-arm64.dmg](https://github.com/buddha2490/PFR-MAC/releases/download/v3.6.9/PFRSentinel-3.6.9-arm64.dmg)**
+
+**281 MB** · Apple Silicon (arm64) · macOS 12 or later
+
+[![Latest release](https://img.shields.io/badge/release-v3.6.9-blue)](https://github.com/buddha2490/PFR-MAC/releases/latest)
+
+| | |
+|---|---|
+| Version | 3.6.9 |
+| Architecture | Apple Silicon (arm64) — **not** Intel |
+| Requires | macOS 12 or later, M1 or newer |
+| SHA-256 | `15675973d55943ea5c7ae23f9b0880ba7b9277ec0d5616a10024b775d6a4a5c0` |
+
+Verify before installing:
+
+```bash
+shasum -a 256 ~/Downloads/PFRSentinel-3.6.9-arm64.dmg
+```
+
+> **This repo is private.** The link works while you are signed in to a GitHub
+> account with access. From a terminal instead:
+>
+> ```bash
+> gh release download v3.6.9 --repo buddha2490/PFR-MAC
+> ```
+
+### Install
+
+1. Open the DMG and drag **PFRSentinel.app** onto the Applications folder.
+2. **First launch only:** right-click (or Control-click) PFRSentinel in
+   Applications and choose **Open**, then **Open** in the dialog.
+
+   A plain double-click will not work the first time. This build is ad-hoc
+   signed rather than notarized by Apple, so macOS shows *"Apple could not
+   verify PFRSentinel is free of malware."* Every later launch is normal.
+
+   If it still refuses:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/PFRSentinel.app
+   ```
+
+Nothing else to install — Python, Qt, the ZWO ASI SDK, and ffmpeg all ride
+along inside the app.
+
+**→ [Full install notes and how to compile the installer on another Mac](docs/DOWNLOAD.md)**
+
+---
+
+# About the application
 
 A modern astrophotography application with a Fluent Design UI (PySide6 + qfluentwidgets) that watches directories for new images or captures directly from ZWO ASI cameras, adding customizable metadata overlays with weather data and serving output through multiple channels.
 
@@ -46,22 +94,32 @@ A modern astrophotography application with a Fluent Design UI (PySide6 + qfluent
 
 ---
 
-## Installation
+## Running from source
 
-### Windows Installer (Recommended)
+The recommended install for macOS is the **[DMG at the top of this page](#-download)** —
+it is self-contained and needs nothing else. To run from source instead:
 
-Download `PFRSentinel_Setup.exe` from the `releases/` folder and run it.
+### macOS (Apple Silicon)
 
-**Self-contained** - includes Python runtime, all dependencies, and ZWO ASI SDK.
+The ZWO SDK is vendored in `sdk/macos/`, so no Homebrew and no `sudo` are
+needed. See **[docs/MACOS.md](docs/MACOS.md)** for full setup.
 
-**Optional:**
-- **ffmpeg** - Needed for timelapse recording
-- **OpenWeatherMap API Key** - For weather data overlays
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh   # first time only
+git clone https://github.com/buddha2490/PFR-MAC.git
+cd PFR-MAC
+uv venv --python 3.12 .venv && uv pip install -r requirements.txt
+./start.sh
+```
 
-### Running from Source (Windows)
+### Windows
+
+Upstream ships a Windows installer; see
+[englishfox90/PFRSentinel](https://github.com/englishfox90/PFRSentinel).
+To run from source:
 
 ```powershell
-git clone <repository-url>
+git clone https://github.com/englishfox90/PFRSentinel.git
 cd PFRSentinel
 python -m venv venv
 .\venv\Scripts\Activate.ps1
@@ -69,17 +127,8 @@ pip install -r requirements.txt
 python main.py
 ```
 
-### macOS (Apple Silicon)
-
-Runs natively; the ZWO SDK is vendored in `sdk/macos/`, so no Homebrew or
-`sudo` is needed. See **[docs/MACOS.md](docs/MACOS.md)** for full setup.
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh   # first time only
-cd PFRSentinel
-uv venv --python 3.12 .venv && uv pip install -r requirements.txt
-./start.sh
-```
+Optional on either platform: an **OpenWeatherMap API key** for weather
+overlays. ffmpeg is bundled, so timelapse needs no extra install.
 
 ---
 
@@ -180,6 +229,17 @@ Logs in `%APPDATA%\PFRSentinel\logs` (7-day rotation)
 
 ## Building
 
+### macOS (Apple Silicon)
+
+```bash
+./build_macos.sh    # -> dist/PFRSentinel-<version>-arm64.dmg
+```
+
+Full details, signing, and notarization: **[docs/DOWNLOAD.md](docs/DOWNLOAD.md)**
+and **[docs/MACOS.md](docs/MACOS.md)**.
+
+### Windows
+
 ```powershell
 .\build_sentinel.bat           # Build executable
 .\build_sentinel_installer.bat # Build installer
@@ -187,9 +247,13 @@ Logs in `%APPDATA%\PFRSentinel\logs` (7-day rotation)
 
 ---
 
-## License
+## License and credit
 
-MIT License - See [LICENSE](LICENSE) for details.
+PFR Sentinel is created and maintained by **Paul Fox-Reeks**
+([englishfox90](https://github.com/englishfox90)) —
+[englishfox90/PFRSentinel](https://github.com/englishfox90/PFRSentinel).
+All credit for the application belongs to him; this fork adds only the macOS
+port and packaging.
 
-**Author:** Paul Fox-Reeks
+MIT License, Copyright (c) 2025 englishfox90 — see [LICENSE](LICENSE).
 

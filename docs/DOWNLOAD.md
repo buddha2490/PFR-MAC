@@ -4,8 +4,8 @@ macOS (Apple Silicon) build of **PFR Sentinel**, a live camera monitoring and
 overlay system for observatories.
 
 This repo is a macOS distribution fork — it carries the installer and the
-instructions for building one. The application itself is the work of
-[**englishfox90**](https://github.com/englishfox90); see
+instructions for building one. The application itself is the work of **Paul Fox-Reeks**
+([englishfox90](https://github.com/englishfox90)); see
 [Credit](#credit-and-license) below.
 
 ---
@@ -160,8 +160,8 @@ per-file limit, so it lives only as a release asset. `.gitignore` excludes
 
 ## Credit and license
 
-PFR Sentinel is created and maintained by
-[**englishfox90**](https://github.com/englishfox90) —
+PFR Sentinel is created and maintained by **Paul Fox-Reeks**
+([englishfox90](https://github.com/englishfox90)) —
 [englishfox90/PFRSentinel](https://github.com/englishfox90/PFRSentinel).
 All credit for the application belongs to the original author. This repo adds
 only macOS packaging and distribution.
